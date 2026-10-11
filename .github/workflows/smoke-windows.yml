@@ -1,0 +1,47 @@
+name: smoke-windows
+on: workflow_dispatch
+permissions: {}
+jobs:
+  smoke:
+    runs-on: ghr-smoke-windows
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Runner is Windows and not an administrator
+        run: |
+          $os = [System.Environment]::OSVersion.VersionString
+          $user = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $isAdmin = ([Security.Principal.WindowsPrincipal]$user).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          "os=$os machine=$env:COMPUTERNAME isAdmin=$isAdmin"
+          if (-not $IsWindows) { throw 'not Windows' }
+          if ($isAdmin) { throw 'job runs as an administrator' }
+
+      - name: Outbound internet works through the NAT gateway
+        run: |
+          $r = Invoke-WebRequest -Uri 'https://api.github.com/zen' -UseBasicParsing -TimeoutSec 20
+          "api.github.com HTTP $($r.StatusCode)"
+          if ($r.StatusCode -ne 200) { throw 'no outbound access' }
+
+      - name: No managed identity token is obtainable
+        run: |
+          $uri = 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https%3A%2F%2Fmanagement.azure.com%2F'
+          try {
+            $r = Invoke-WebRequest -Uri $uri -Headers @{ Metadata = 'true' } -UseBasicParsing -TimeoutSec 5
+            "token request HTTP status: $($r.StatusCode)"
+            throw 'a managed identity token was issued'
+          } catch [System.Net.WebException] {
+            "token request failed as expected: $($_.Exception.Status)"
+          } catch [Microsoft.PowerShell.Commands.HttpResponseException] {
+            "token request HTTP status: $([int]$_.Exception.Response.StatusCode)"
+          }
+
+      - name: The ACA platform network is unreachable
+        run: |
+          $client = [System.Net.Sockets.TcpClient]::new()
+          $task = $client.ConnectAsync('10.60.0.132', 443)
+          $reached = $task.Wait(4000) -and $client.Connected
+          $client.Dispose()
+          "connect to 10.60.0.132:443 reached=$reached"
+          if ($reached) { throw 'worker can reach the ACA platform network' }
